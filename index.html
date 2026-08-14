@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Time & Attendance</title>
+
+  <!-- QR scanner library -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f6f8;
+      color: #111;
+    }
+    .shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 28px 18px;
+    }
+    h1 {
+      margin: 8px 0 4px;
+      font-size: clamp(30px, 6vw, 54px);
+      text-align: center;
+    }
+    .subtitle {
+      margin-bottom: 24px;
+      font-size: clamp(18px, 3vw, 28px);
+      text-align: center;
+    }
+    #reader {
+      width: min(92vw, 560px);
+      background: #fff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 30px rgba(0,0,0,.12);
+    }
+    .statusline {
+      margin-top: 18px;
+      font-size: 18px;
+      color: #555;
+      text-align: center;
+    }
+    .retry {
+      display:none;
+      margin-top:18px;
+      padding:14px 22px;
+      border:0;
+      border-radius:10px;
+      font-size:18px;
+      font-weight:700;
+      cursor:pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <h1>TIME &amp; ATTENDANCE</h1>
+    <div class="subtitle">Present your employee QR pass</div>
+    <div id="reader"></div>
+    <div class="statusline" id="statusline">Starting camera…</div>
+    <button class="retry" id="retry" onclick="location.reload()">Retry camera</button>
+  </div>
+
+<script>
+  // IMPORTANT:
+  // Verify this is your latest Apps Script /exec deployment URL.
+  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz-ffNozIKCHgojWoIKgeW-mxhrgGK3f50IdMHcEOsVBdK6vBU9WBq-l0E3SpO2G_jIFQ/exec';
+
+  let scanner = null;
+  let processing = false;
+
+  const statusline = document.getElementById('statusline');
+  const retry = document.getElementById('retry');
+
+  async function startScanner() {
+    try {
+      scanner = new Html5Qrcode('reader');
+
+      await scanner.start(
+        { facingMode: 'environment' },
+        {
+          fps: 10,
+          qrbox: function(viewfinderWidth, viewfinderHeight) {
+            const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
+            return { width: size, height: size };
+          },
+          aspectRatio: 1.0,
+          disableFlip: false
+        },
+        onScanSuccess,
+        function() {}
+      );
+
+      statusline.textContent = 'Ready to scan';
+    } catch (err) {
+      console.error(err);
+      statusline.textContent = 'Camera unavailable. Allow camera access for this site, then retry.';
+      retry.style.display = 'inline-block';
+    }
+  }
+
+  async function onScanSuccess(decodedText) {
+    if (processing) return;
+    processing = true;
+
+    const token = String(decodedText || '').trim();
+    if (!token) {
+      processing = false;
+      return;
+    }
+
+    statusline.textContent = 'Processing…';
+
+    try {
+      if (scanner) await scanner.stop();
+    } catch (e) {
+      console.warn(e);
+    }
+
+    // Apps Script records the clocking and shows the confirmation.
+    // It then redirects back to this scanner page after 2.5 seconds.
+    const returnUrl = window.location.href.split('#')[0];
+    const target =
+      SCRIPT_URL +
+      '?action=clock' +
+      '&token=' + encodeURIComponent(token) +
+      '&returnUrl=' + encodeURIComponent(returnUrl);
+
+    window.location.href = target;
+  }
+
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    statusline.textContent = 'Camera access requires HTTPS.';
+    retry.style.display = 'none';
+  } else {
+    window.addEventListener('load', startScanner);
+  }
+</script>
+</body>
+</html>
