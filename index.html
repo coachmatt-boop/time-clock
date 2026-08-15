@@ -4,10 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Time & Attendance</title>
-
-  <!-- QR scanner library -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -65,21 +62,42 @@
     <div class="subtitle">Present your employee QR pass</div>
     <div id="reader"></div>
     <div class="statusline" id="statusline">Starting camera…</div>
-    <button class="retry" id="retry" onclick="location.reload()">Retry camera</button>
+    <button class="retry" id="retry">Retry camera</button>
   </div>
 
 <script>
-  // IMPORTANT:
-  // Verify this is your latest Apps Script /exec deployment URL.
   const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz-ffNozIKCHgojWoIKgeW-mxhrgGK3f50IdMHcEOsVBdK6vBU9WBq-l0E3SpQ2G_jlFQ/exec';
+
   let scanner = null;
   let processing = false;
+  let retryCount = 0;
 
   const statusline = document.getElementById('statusline');
-  const retry = document.getElementById('retry');
+  const retryBtn = document.getElementById('retry');
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 
   async function startScanner() {
+    processing = false;
+    retryBtn.style.display = 'none';
+    statusline.textContent = 'Starting camera…';
+
     try {
+      if (scanner) {
+        try {
+          const state = scanner.getState ? scanner.getState() : null;
+          if (state === 2 || state === 3) {
+            await scanner.stop();
+          }
+        } catch (e) {}
+
+        try {
+          await scanner.clear();
+        } catch (e) {}
+      }
+
       scanner = new Html5Qrcode('reader');
 
       await scanner.start(
@@ -97,11 +115,21 @@
         function() {}
       );
 
+      retryCount = 0;
       statusline.textContent = 'Ready to scan';
+
     } catch (err) {
       console.error(err);
-      statusline.textContent = 'Camera unavailable. Allow camera access for this site, then retry.';
-      retry.style.display = 'inline-block';
+      retryCount++;
+
+      if (retryCount <= 3) {
+        statusline.textContent = 'Reconnecting camera…';
+        await delay(1200);
+        return startScanner();
+      }
+
+      statusline.textContent = 'Camera unavailable. Tap Retry camera.';
+      retryBtn.style.display = 'inline-block';
     }
   }
 
@@ -118,29 +146,42 @@
     statusline.textContent = 'Processing…';
 
     try {
-      if (scanner) await scanner.stop();
+      if (scanner) {
+        await scanner.stop();
+      }
     } catch (e) {
       console.warn(e);
     }
 
-    // Apps Script records the clocking and shows the confirmation.
-    // It then redirects back to this scanner page after 2.5 seconds.
-    const returnUrl = window.location.href.split('#')[0];
+    const cleanReturnUrl = window.location.origin + window.location.pathname + '?returned=1';
+
     const target =
       SCRIPT_URL +
       '?action=clock' +
       '&token=' + encodeURIComponent(token) +
-      '&returnUrl=' + encodeURIComponent(returnUrl);
+      '&returnUrl=' + encodeURIComponent(cleanReturnUrl);
 
     window.location.href = target;
   }
 
-  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-    statusline.textContent = 'Camera access requires HTTPS.';
-    retry.style.display = 'none';
-  } else {
-    window.addEventListener('load', startScanner);
-  }
+  retryBtn.addEventListener('click', function() {
+    retryCount = 0;
+    startScanner();
+  });
+
+  window.addEventListener('pageshow', async function() {
+    const params = new URLSearchParams(window.location.search);
+    const returned = params.get('returned') === '1';
+
+    if (returned) {
+      // Remove the flag from the visible URL without reloading.
+      history.replaceState(null, '', window.location.pathname);
+      statusline.textContent = 'Reconnecting camera…';
+      await delay(1500);
+    }
+
+    startScanner();
+  });
 </script>
 </body>
 </html>
