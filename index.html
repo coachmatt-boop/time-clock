@@ -1,187 +1,247 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Time & Attendance</title>
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <style>
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      min-height: 100%;
-      font-family: Arial, Helvetica, sans-serif;
-      background: #f4f6f8;
-      color: #111;
-    }
-    .shell {
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 28px 18px;
-    }
-    h1 {
-      margin: 8px 0 4px;
-      font-size: clamp(30px, 6vw, 54px);
-      text-align: center;
-    }
-    .subtitle {
-      margin-bottom: 24px;
-      font-size: clamp(18px, 3vw, 28px);
-      text-align: center;
-    }
-    #reader {
-      width: min(92vw, 560px);
-      background: #fff;
-      border-radius: 16px;
-      overflow: hidden;
-      box-shadow: 0 8px 30px rgba(0,0,0,.12);
-    }
-    .statusline {
-      margin-top: 18px;
-      font-size: 18px;
-      color: #555;
-      text-align: center;
-    }
-    .retry {
-      display:none;
-      margin-top:18px;
-      padding:14px 22px;
-      border:0;
-      border-radius:10px;
-      font-size:18px;
-      font-weight:700;
-      cursor:pointer;
-    }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <h1>TIME &amp; ATTENDANCE</h1>
-    <div class="subtitle">Present your employee QR pass</div>
-    <div id="reader"></div>
-    <div class="statusline" id="statusline">Starting camera…</div>
-    <button class="retry" id="retry">Retry camera</button>
-  </div>
+const EMPLOYEE_SHEET = 'Employees';
+const LOG_SHEET = 'ClockingLog';
+const CONFIG_SHEET = 'Config';
 
-<script>
-  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz-ffNozIKCHgojWoIKgeW-mxhrgGK3f50IdMHcEOsVBdK6vBU9WBq-l0E3SpQ2G_jlFQ/exec';
+/**
+ * V3 JSON API.
+ *
+ * GET /exec?action=clock&token=TOKEN
+ * GET /exec?action=whosin
+ * GET /exec
+ *
+ * JSONP is used for the external GitHub Pages kiosk so the kiosk page
+ * can stay open while the Apps Script backend records the transaction.
+ */
+function doGet(e) {
+  const action = String((e && e.parameter && e.parameter.action) || '').toLowerCase();
+  const callback = String((e && e.parameter && e.parameter.callback) || '').trim();
 
-  let scanner = null;
-  let processing = false;
-  let retryCount = 0;
-
-  const statusline = document.getElementById('statusline');
-  const retryBtn = document.getElementById('retry');
-
-  function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  if (action === 'clock') {
+    const token = String(e.parameter.token || '').trim();
+    const result = clockEmployee_(token);
+    return jsonp_(result, callback);
   }
 
-  async function startScanner() {
-    processing = false;
-    retryBtn.style.display = 'none';
-    statusline.textContent = 'Starting camera…';
-
-    try {
-      if (scanner) {
-        try {
-          const state = scanner.getState ? scanner.getState() : null;
-          if (state === 2 || state === 3) {
-            await scanner.stop();
-          }
-        } catch (e) {}
-
-        try {
-          await scanner.clear();
-        } catch (e) {}
-      }
-
-      scanner = new Html5Qrcode('reader');
-
-      await scanner.start(
-        { facingMode: 'environment' },
-        {
-          fps: 10,
-          qrbox: function(viewfinderWidth, viewfinderHeight) {
-            const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
-            return { width: size, height: size };
-          },
-          aspectRatio: 1.0,
-          disableFlip: false
-        },
-        onScanSuccess,
-        function() {}
-      );
-
-      retryCount = 0;
-      statusline.textContent = 'Ready to scan';
-
-    } catch (err) {
-      console.error(err);
-      retryCount++;
-
-      if (retryCount <= 3) {
-        statusline.textContent = 'Reconnecting camera…';
-        await delay(1200);
-        return startScanner();
-      }
-
-      statusline.textContent = 'Camera unavailable. Tap Retry camera.';
-      retryBtn.style.display = 'inline-block';
-    }
+  if (action === 'whosin') {
+    return jsonp_(getWhosIn_(), callback);
   }
 
-  async function onScanSuccess(decodedText) {
-    if (processing) return;
-    processing = true;
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      success: true,
+      message: 'Time & Attendance API is running',
+      version: 'V3'
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
 
-    const token = String(decodedText || '').trim();
+function clockEmployee_(token) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const employees = ss.getSheetByName(EMPLOYEE_SHEET);
+    const log = ss.getSheetByName(LOG_SHEET);
+
+    if (!employees || !log) {
+      return result_(false, '', 'SYSTEM ERROR', new Date(), '');
+    }
+
+    const cfg = getConfig_();
+    const kioskName = cfg.KioskName || 'Workshop';
+    const lockoutSeconds = Number(cfg.DoubleScanLockoutSeconds || 30);
+
     if (!token) {
-      processing = false;
-      return;
+      return result_(false, '', 'INVALID PASS', new Date(), '');
     }
 
-    statusline.textContent = 'Processing…';
+    const data = employees.getDataRange().getValues();
+    const now = new Date();
 
-    try {
-      if (scanner) {
-        await scanner.stop();
+    for (let i = 1; i < data.length; i++) {
+      const employeeID = String(data[i][0] || '').trim();
+      const name = String(data[i][1] || '').trim();
+      const qrToken = String(data[i][2] || '').trim();
+      const active = data[i][3];
+      const currentStatus = String(data[i][4] || 'OUT').toUpperCase();
+      const lastClock = data[i][5];
+
+      if (qrToken === token && isTrue_(active)) {
+        if (!employeeID || !name) {
+          return result_(false, name, 'EMPLOYEE RECORD INCOMPLETE', now, '');
+        }
+
+        if (lastClock instanceof Date && !isNaN(lastClock)) {
+          const secondsSinceLast = (now.getTime() - lastClock.getTime()) / 1000;
+          if (secondsSinceLast >= 0 && secondsSinceLast < lockoutSeconds) {
+            return result_(false, name, 'ALREADY CLOCKED', now, currentStatus);
+          }
+        }
+
+        const newStatus = currentStatus === 'IN' ? 'OUT' : 'IN';
+
+        employees.getRange(i + 1, 5).setValue(newStatus);
+        employees.getRange(i + 1, 6).setValue(now);
+
+        log.appendRow([
+          now,
+          employeeID,
+          name,
+          newStatus,
+          kioskName
+        ]);
+
+        SpreadsheetApp.flush();
+
+        return result_(
+          true,
+          name,
+          newStatus === 'IN' ? 'CLOCKED IN' : 'CLOCKED OUT',
+          now,
+          newStatus
+        );
       }
-    } catch (e) {
-      console.warn(e);
     }
 
-    const cleanReturnUrl = window.location.origin + window.location.pathname + '?returned=1';
+    return result_(false, '', 'PASS NOT RECOGNISED', now, '');
 
-    const target =
-      SCRIPT_URL +
-      '?action=clock' +
-      '&token=' + encodeURIComponent(token) +
-      '&returnUrl=' + encodeURIComponent(cleanReturnUrl);
+  } finally {
+    lock.releaseLock();
+  }
+}
 
-    window.location.href = target;
+function generateMissingTokens() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(EMPLOYEE_SHEET);
+  if (!sheet) throw new Error('Employees sheet not found.');
+
+  const data = sheet.getDataRange().getValues();
+  const existing = new Set(
+    data.slice(1)
+      .map(r => String(r[2] || '').trim())
+      .filter(Boolean)
+  );
+
+  let generated = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const employeeID = String(data[i][0] || '').trim();
+    const name = String(data[i][1] || '').trim();
+    const token = String(data[i][2] || '').trim();
+
+    if (employeeID && name && !token) {
+      let newToken;
+      do {
+        newToken = Utilities.getUuid().replace(/-/g, '');
+      } while (existing.has(newToken));
+
+      sheet.getRange(i + 1, 3).setValue(newToken);
+      existing.add(newToken);
+      generated++;
+    }
   }
 
-  retryBtn.addEventListener('click', function() {
-    retryCount = 0;
-    startScanner();
-  });
+  SpreadsheetApp.flush();
+  return generated;
+}
 
-  window.addEventListener('pageshow', async function() {
-    const params = new URLSearchParams(window.location.search);
-    const returned = params.get('returned') === '1';
+function getWhosIn_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(EMPLOYEE_SHEET);
+  if (!sheet) throw new Error('Employees sheet not found.');
 
-    if (returned) {
-      // Remove the flag from the visible URL without reloading.
-      history.replaceState(null, '', window.location.pathname);
-      statusline.textContent = 'Reconnecting camera…';
-      await delay(1500);
+  const data = sheet.getDataRange().getValues();
+  const people = [];
+
+  for (let i = 1; i < data.length; i++) {
+    if (isTrue_(data[i][3]) && String(data[i][4] || '').toUpperCase() === 'IN') {
+      people.push({
+        employeeID: String(data[i][0] || ''),
+        name: String(data[i][1] || ''),
+        lastClock: data[i][5] instanceof Date ? formatDateTime_(data[i][5]) : ''
+      });
     }
+  }
 
-    startScanner();
-  });
-</script>
-</body>
-</html>
+  people.sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    success: true,
+    count: people.length,
+    people: people,
+    refreshed: formatDateTime_(new Date())
+  };
+}
+
+function resetAllToOut() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(EMPLOYEE_SHEET);
+  if (!sheet) throw new Error('Employees sheet not found.');
+
+  const data = sheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (isTrue_(data[i][3])) {
+      sheet.getRange(i + 1, 5).setValue('OUT');
+    }
+  }
+
+  SpreadsheetApp.flush();
+}
+
+function jsonp_(obj, callback) {
+  const json = JSON.stringify(obj);
+
+  // Sanitize callback to a safe JS identifier path.
+  if (callback && /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(callback)) {
+    return ContentService
+      .createTextOutput(callback + '(' + json + ');')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+
+  return ContentService
+    .createTextOutput(json)
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getConfig_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG_SHEET);
+  if (!sheet) return {};
+
+  const values = sheet.getDataRange().getValues();
+  const cfg = {};
+
+  for (let i = 1; i < values.length; i++) {
+    const key = String(values[i][0] || '').trim();
+    if (key) cfg[key] = values[i][1];
+  }
+
+  return cfg;
+}
+
+function isTrue_(value) {
+  return value === true ||
+    String(value).toUpperCase() === 'TRUE' ||
+    String(value).toUpperCase() === 'YES';
+}
+
+function result_(success, name, message, when, status) {
+  return {
+    success: success,
+    name: name || '',
+    message: message || '',
+    time: formatTime_(when),
+    dateTime: formatDateTime_(when),
+    status: status || ''
+  };
+}
+
+function formatTime_(date) {
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'HH:mm');
+}
+
+function formatDateTime_(date) {
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm:ss');
+}
