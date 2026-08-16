@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Illusion — Who's In</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f6f8;
+      color: #111;
+    }
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 24px 18px 40px;
+    }
+    .brand {
+      text-align: center;
+      font-size: 34px;
+      font-weight: 900;
+      letter-spacing: 1px;
+      margin: 8px 0 20px;
+    }
+    h1 {
+      text-align: center;
+      margin: 0 0 6px;
+      font-size: 30px;
+    }
+    #count {
+      text-align: center;
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 20px;
+    }
+    .person {
+      background: #fff;
+      border-radius: 12px;
+      padding: 15px 17px;
+      margin: 10px 0;
+      box-shadow: 0 3px 12px rgba(0,0,0,.06);
+    }
+    .name {
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .time {
+      margin-top: 4px;
+      color: #666;
+      font-size: 14px;
+    }
+    #status {
+      text-align: center;
+      margin-top: 18px;
+      color: #777;
+      font-size: 14px;
+    }
+    .error {
+      background: #fff1f1;
+      border: 1px solid #e5b6b6;
+      color: #8a1c1c;
+      padding: 16px;
+      border-radius: 12px;
+      text-align: center;
+      margin-top: 20px;
+    }
+    button {
+      display: none;
+      margin: 16px auto 0;
+      padding: 12px 20px;
+      border: 0;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">ILLUSION</div>
+    <h1>WHO'S IN?</h1>
+    <div id="count">Loading…</div>
+    <div id="list"></div>
+    <div id="status">Connecting to live attendance…</div>
+    <button id="retry">Retry</button>
+  </div>
+
+<script>
+  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbztqc_WWKigxPbeEJVyIJu8P7BkIZDBSWPf8J9xSSpYsq-nH-3IFwlncvRsyozpOq88BA/exec';
+  let timeoutId = null;
+
+  function escapeText(value) {
+    return String(value == null ? '' : value);
+  }
+
+  function loadWhosIn() {
+    const count = document.getElementById('count');
+    const list = document.getElementById('list');
+    const status = document.getElementById('status');
+    const retry = document.getElementById('retry');
+
+    retry.style.display = 'none';
+    status.textContent = 'Connecting to live attendance…';
+
+    const callbackName = '__whosIn_' + Date.now();
+
+    window[callbackName] = function(data) {
+      clearTimeout(timeoutId);
+
+      const script = document.getElementById(callbackName);
+      if (script) script.remove();
+
+      try { delete window[callbackName]; } catch (e) {}
+
+      if (!data || data.success !== true) {
+        showError('The attendance system returned an invalid response.');
+        return;
+      }
+
+      count.textContent = data.count + (data.count === 1 ? ' person currently in' : ' people currently in');
+      list.innerHTML = '';
+
+      if (!data.people || data.people.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'person';
+        empty.innerHTML = '<div class="name">Nobody is currently marked IN</div>';
+        list.appendChild(empty);
+      } else {
+        data.people.forEach(function(person) {
+          const card = document.createElement('div');
+          card.className = 'person';
+
+          const name = document.createElement('div');
+          name.className = 'name';
+          name.textContent = escapeText(person.name);
+
+          const time = document.createElement('div');
+          time.className = 'time';
+          time.textContent = person.lastClock ? 'Last clock: ' + escapeText(person.lastClock) : '';
+
+          card.appendChild(name);
+          card.appendChild(time);
+          list.appendChild(card);
+        });
+      }
+
+      status.textContent = 'Updated ' + (data.refreshed || 'just now');
+    };
+
+    const script = document.createElement('script');
+    script.id = callbackName;
+    script.src =
+      SCRIPT_URL +
+      '?action=whosin' +
+      '&callback=' + encodeURIComponent(callbackName) +
+      '&_=' + Date.now();
+
+    script.onerror = function() {
+      clearTimeout(timeoutId);
+      showError('Could not connect to the attendance system.');
+    };
+
+    document.body.appendChild(script);
+
+    timeoutId = setTimeout(function() {
+      showError('The attendance system did not respond. Tap Retry.');
+    }, 10000);
+  }
+
+  function showError(message) {
+    const count = document.getElementById('count');
+    const list = document.getElementById('list');
+    const status = document.getElementById('status');
+    const retry = document.getElementById('retry');
+
+    count.textContent = 'Unable to load';
+    list.innerHTML = '<div class="error">' + message + '</div>';
+    status.textContent = '';
+    retry.style.display = 'block';
+  }
+
+  document.getElementById('retry').addEventListener('click', loadWhosIn);
+
+  loadWhosIn();
+  setInterval(loadWhosIn, 30000);
+</script>
+</body>
+</html>
